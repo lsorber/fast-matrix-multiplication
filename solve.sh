@@ -1,0 +1,1 @@
+gurobi_cl Threads=14 MIPGap=1e-16 MIPFocus=3 Method=2 CutPasses=1 Presolve=2 LogFile=$1.log ResultFile=$1.sol InputFile=$1.mst $1
