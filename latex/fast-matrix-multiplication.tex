@@ -1,0 +1,168 @@
+\documentclass{article}
+
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{color}
+\usepackage{hyperref}
+
+\begin{document}
+
+\title{A mixed-integer linear program formulation\\for fast matrix multiplication}
+\author{Laurent Sorber, Marc Van Barel}
+\maketitle
+
+\section{Introduction}
+
+Multiplying $N \times N$ matrices naively costs $N^3$ floating point (FP) multiplications. Strassen formulated a \emph{multiplication tensor} $\mathcal{T}$ of size $N^2 \times N^2 \times N^2$ whose polyadic decomposition of rank $R$ in factor matrices with elements in $\{-1, 0, 1\}$ corresponds to multiplying $N \times N$ matrices with only $R$ FP multiplications. Furthermore, Strassen found a solution for $N=2$ with $R=7$ \cite{Strassen1969}, which was later shown to be both a canonical polyadic decomposition \cite{Brockett78,Hopcroft71,Winograd71} (there is no polyadic decomposition with smaller $R$) and essentially unique \cite{DeGroote78} (all other solutions of the same rank are equivalent to Strassen's solution).
+
+Strassen's algorithm is most effective when applied at the block level instead of the scalar level, thereby saving one block-matrix multiplication in the multiplication of $2 \times 2$ block matrices. Applying this recursively leads to a complexity of $O(N^{\log_2(7) \approx 2.80735...})$ floating point operations for matrix multiplication. In practice, only a few iterations of Strassen's algorithm would be applied before the additional sums and differences are more expensive than the block-multiplication savings.
+
+Multiplying $3 \times 3$ matrices naively costs 27 multiplications, while the current best known polyadic decompositions do it in only $R = 23$ multiplications. However, recursive application of such solutions lead to a complexity of $O(N^{\log_3(23) \approx 2.85405...})$, which is worse than Strassen's $2 \times 2$ solution. We would have to find a solution of at most $R = 21$ to improve on Strassen's algorithm. It is currently not known whether $R = 23$ is the lowest rank that can be attained, nor is it the case that solutions of that rank are essentially unique. This leads us to some interesting questions. Do lower rank solutions exist? If so, are those essentially unique? If not, is the most sparse solution (i.e., the solution with the least number of sums and differences) essentially unique?
+
+While local optimization methods can be useful to generate candidate solutions, they cannot be used to prove that no solutions of a certain rank exist, nor that no better solutions exist (whether it be of lower rank, or more sparse solutions). In this note, we translate the polyadic decomposition into a mixed-integer linear program (MILP), which, if tractable, can provide answers to the above questions.
+
+\section{Fast matrix multiplication as a nonlinear program}
+
+\subsection{Problem statement}
+
+The $\{0, 1\}$ multiplication tensor $\mathcal{T}$ associated with the matrix multiplication \mbox{$A\cdot B = C$} where $A$ is of size $M \times P$, $B$ is of size $P \times N$ and $C$ is of size $M \times N$ is defined by the equation
+\begin{align}
+    \label{eq:strassen}
+    \mathcal{T} \cdot_1 \mathrm{vec}(A^\mathrm{T}) \cdot_2 \mathrm{vec}(B^\mathrm{T}) = \mathrm{vec}(C)
+\end{align}
+where $\cdot_n$ is the mode-$n$ tensor-vector product and $\mathrm{vec}(\cdot)$ is the column-wise vectorization operator. The multiplication tensor is sometimes written as $\langle M, P, N \rangle$ to specify the problem dimensions. In this note, we consider only square matrix multiplication and set $M = P = N$, although much of our discussion also applies to rectangular matrices and other bilinear operators.
+
+The tensor $\mathcal{T}$ can be decomposed into a sum of $R$ rank-one tensors:
+\begin{align}
+    \label{eq:pd}
+    \mathcal{T}_{ijk} &= \sum_{r=1}^R U_{ir} \cdot V_{jr} \cdot W_{kr} \quad \forall i,j,k=1 \ldots N^2
+\end{align}
+where $U$, $V$, and $W$ are the so-called factor matrices of size $N^2 \times R$. Equation (2) is called a polyadic decomposition (PD) of $\mathcal{T}$, and specifically a canonical polyadic decomposition (CPD) if $R$ is minimal. The naive matrix multiplication algorithm corresponds to a PD of rank $R = N^3$, where each rank-one tensor contributes one nonzero element to the sum.
+
+Each rank-one matrix $U_{:r} \cdot V_{:r}^{\mathrm{T}}$ corresponds to a single multiplication of a linear combination of elements of the matrix $A$ and a linear combination of the elements of $B$. The entry $W_{kr}$ then determines how much the resulting scalar contributes to the $k$th entry of $\mathrm{vec}(C)$. To see this, we rewrite (\ref{eq:strassen}) using (\ref{eq:pd}) as:
+\begin{align}
+    \mathrm{vec}(C)_k &= \mathcal{T}_{::k} \cdot_1 \mathrm{vec}(A^\mathrm{T}) \cdot_2 \mathrm{vec}(B^\mathrm{T}) \\
+    &= \left(\sum_{r=1}^R (U_{:r} \cdot V_{:r}^{\mathrm{T}}) \cdot W_{kr}\right) \cdot_1 \mathrm{vec}(A^\mathrm{T}) \cdot_2 \mathrm{vec}(B^\mathrm{T}) \\
+    &= \sum_{r=1}^R \langle \mathrm{vec}(A^\mathrm{T}), U_{:r} \rangle \cdot \langle V_{:r}, \mathrm{vec}(B^\mathrm{T}) \rangle \cdot W_{kr} \label{eq:fastxgemm}
+\end{align}
+With factor matrices $U$, $V$, and $W$ that satisfy the equality (\ref{eq:pd}) and a rank $R < N^3$, we refer to (\ref{eq:fastxgemm}) as a fast matrix multiplication algorithm.
+
+\subsection{Formulation as an optimization problem}
+
+An optimal polyadic decomposition of the multiplication tensor (\ref{eq:pd}) can be formulated as the discrete non-linear program (NLP)
+\begin{align}
+    \label{eq:nlp}
+    \begin{split}
+    \underset{U,V,W}{\operatorname{minimize}} & \quad 3N^2R \sum_{i,j,k=1}^{N^2} \left| T_{ijk} - \sum_{r=1}^R U_{ir} \cdot V_{jr} \cdot W_{kr} \right|\\
+    & \quad + \sum_{i,r} \left|U_{ir}\right| + \sum_{j,r} \left|V_{jr}\right| + \sum_{k,r} \left|W_{kr}\right|\\
+    \mbox{s.t.} & \quad U,V,W \in \{-1,0,1\}^{N^2 \times R}
+    \end{split}
+\end{align}
+where the entries of the factor matrices $U$, $V$, and $W$ are constrained to be $-1$, $0$ or $1$ so that they act as selection operators in the fast matrix multiplication algorithm (\ref{eq:fastxgemm}). The objective function's primary goal is to minimize the L1 norm of the residual and is multiplied by a factor of $3N^2R$ so that it doesn't conflict with its secondary objective, which is to maximize sparsity of the solution. Other norms, distance metrics, or even equalities, could be considered for the primary goal. However, we choose the L1 norm here since it will be closest to our translation into a MILP.
+
+\section{Fast matrix multiplication as a mixed-integer linear program}
+
+\subsection{Motivation}
+
+Much like eigenvalue decomposition algorithms, MILP solvers have seen decades of progress and are now able to solve problems that were previously considered unsolvable \cite{Linderoth2017}. For example, the commercial solver Gurobi v7.0 claims a 43x speedup since it was released 7 years ago \cite{GurobiBench7}. IBM's CPLEX v12.7 solver claims a 37x speedup since its v10 release 10 years prior \cite{CPLEXBench127}. Modern MILP solvers use a number of building blocks to achieve those speedups:
+
+\begin{enumerate}
+\item Presolve: Tighten formulation and reduce problem size.
+\item Solve continuous relaxations: Ignores integrality and gives a bound on the optimal integral objective.
+\item Cutting planes: Cut off relaxation solutions.
+\item Branching variable selection: Intelligently explore search space.
+\item Heuristics: Find integer feasible solutions.
+\end{enumerate}
+
+A MILP's convex relaxation as a linear program (LP) is what allows us to explore the search space of candidate solutions effectively and find a globally optimal solution. The root LP can be solved efficiently in polynomial time and will provide us with both a solution that is (hopefully) close to feasible, and a lower bound on the objective function. In the subsequent branch and bound phase of the solver, variables that were not integral but should be can be selected for branching. Nodes in this search tree can provide better upper bounds (when new feasible solutions are found) and lower bounds (when the best unexplored node's LP objective value is higher than the current lower bound) on the objective value. When the gap between the upper and lower bound is reduced to zero, we have obtained a globally optimal solution in the sense that there are no solutions with a better objective value.
+
+\subsection{MILP formulation}
+
+We parametrize the factor matrices with two binary components that represent whether the factor matrices' entries are strictly negative, strictly positive, or neither. With these components in hand, we show that linear constraints can emulate the multilinear character of the objective function. To improve convergence to a global minimum, additional constraints could be formulated. However, let us begin by describing compact MILP with the same solutions as the NLP (\ref{eq:nlp}):
+
+{\footnotesize
+\begin{align}
+    \label{eq:milp}
+    \begin{split}
+    \underset{\substack{}}{\operatorname{minimize}} & \quad 3N^2R \sum_{i,j,k=1}^{N^2} \mathit{COST}_{ijk}\\
+    &\quad + \sum_{i,r} \mathit{ABSALTU}_{ir} + \sum_{j,r} \mathit{ABSALTV}_{jr} + \sum_{k,r} \mathit{ABSALTW}_{kr}\\
+    &\quad + \frac{1}{3N^2R}\left(\sum_{i,r} \mathit{ABSDIFFU}_{ir} + \sum_{j,r} \mathit{ABSDIFFV}_{jr} + \sum_{k,r} \mathit{ABSDIFFW}_{kr}\right)\\
+    \mbox{s.t.} & \quad \mbox{\color{blue}// $\mathit{COST}$ is the absolute value of $\mathcal{T} - [\![U,V,W]\!]$} \\
+    & \quad -\mathit{COST}_{ijk} \leq T_{ijk} - \sum_{r=1}^R \mathit{VAL}_{ijkr} \leq \mathit{COST}_{ijk}\\
+    & \quad \mbox{\color{blue}// $U = [U > 0] - [U < 0]$} \\
+    & \quad U = \mathit{POSU} - \mathit{NEGU} \\
+    & \quad V = \mathit{POSV} - \mathit{NEGV} \\
+    & \quad W = \mathit{POSW} - \mathit{NEGW} \\
+    & \quad \mbox{\color{blue}// $|U| = [U > 0] + [U < 0]$} \\
+    & \quad \mathit{ABSU} = \mathit{POSU} + \mathit{NEGU} \\
+    & \quad \mathit{ABSV} = \mathit{POSV} + \mathit{NEGV} \\
+    & \quad \mathit{ABSW} = \mathit{POSW} + \mathit{NEGW} \\
+    & \quad \mbox{\color{blue}// Alternate definition of  $|U|$, $|V|$, and $|W|$ } \\
+    & \quad -\mathit{ABSALTU} \leq U \leq \mathit{ABSALTU}  \\
+    & \quad -\mathit{ABSALTV} \leq V \leq \mathit{ABSALTV}  \\
+    & \quad -\mathit{ABSALTW} \leq W \leq \mathit{ABSALTW}  \\
+    & \quad \mbox{\color{blue}// Distance between two measures of absolute values} \\
+    & \quad -\mathit{ABSDIFFU} \leq \mathit{ABSU} - \mathit{ABSALTU} \leq \mathit{ABSDIFFU}  \\
+    & \quad -\mathit{ABSDIFFV} \leq \mathit{ABSV} - \mathit{ABSALTV} \leq \mathit{ABSDIFFV}  \\
+    & \quad -\mathit{ABSDIFFW} \leq \mathit{ABSW} - \mathit{ABSALTW} \leq \mathit{ABSDIFFW}  \\
+    & \quad \mbox{\color{blue}// Force $\mathit{VAL}$ for the case (1,1,1) and (-1,-1,-1)} \\
+    & \quad -2 \leq \mathit{VAL}_{ijkr} - U_{ir} - V_{jr} - W_{kr} \leq 2 \\
+    & \quad \mbox{\color{blue}// Force $\mathit{VAL}$ for the case (1,1,-1) and (1,-1,-1)} \\
+    & \quad -2 \leq \mathit{VAL}_{ijkr} - U_{ir} + V_{jr} + W_{kr} \leq 2 \\
+    & \quad -2 \leq \mathit{VAL}_{ijkr} + U_{ir} - V_{jr} + W_{kr} \leq 2 \\
+    & \quad -2 \leq \mathit{VAL}_{ijkr} + U_{ir} + V_{jr} - W_{kr} \leq 2 \\
+    & \quad \mbox{\color{blue}// Force $\mathit{VAL}$ for the cases (0,*,*), (*,0,*), and (*,*,0)} \\
+    & \quad -\mathit{ABSU}_{ir} \leq \mathit{VAL}_{ijkr} \leq \mathit{ABSU}_{ir} \\
+    & \quad -\mathit{ABSV}_{jr} \leq \mathit{VAL}_{ijkr} \leq \mathit{ABSV}_{jr} \\
+    & \quad -\mathit{ABSW}_{kr} \leq \mathit{VAL}_{ijkr} \leq \mathit{ABSW}_{kr} \\
+    & \quad \mbox{\color{blue}// Variable bounds} \\
+    & \quad -1 \leq U, V, W, \mathit{VAL} \leq 1 \\
+    & \quad 0 \leq \mathit{NEGU}, \mathit{NEGV}, \mathit{NEGW}, \mathit{POSU}, \mathit{POSV}, \mathit{POSW} \leq 1 \\
+    & \quad 0 \leq \mathit{ABSU}, \mathit{ABSV}, \mathit{ABSW}, \mathit{ABSALTU}, \mathit{ABSALTV}, \mathit{ABSALTW} \leq 1 \\
+    & \quad 0 \leq \mathit{COST}, \mathit{ABSDIFFU}, \mathit{ABSDIFFV}, \mathit{ABSDIFFW} \leq 1 \\
+    & \quad \mbox{\color{blue}// Integer variables} \\
+    & \quad \mathit{NEGU}, \mathit{NEGV}, \mathit{NEGW}, \mathit{POSU}, \mathit{POSV}, \mathit{POSW} \in \mathbb{Z}^{N^2 \times R}
+    \end{split}
+\end{align}
+}
+
+The idea of the MILP (\ref{eq:milp}) is to introduce variables $\mathit{VALUE}_{ijkr}$ and force them to be equal to the multilinear products $U_{ir}\cdot V_{jr}\cdot W_{kr}$ when the entries of $U$, $V$, and $W$ are in $\{-1,0,1\}$. Herein, forcing $\mathit{VALUE}_{ijkr}$ to be zero when one of $U_{ir}$, $V_{jr}$, or $W_{kr}$ is zero is the most difficult constraint since it requires having access to the absolute values of the factor matrices. To illustrate the problem, set $\mathit{NEGU}_{ir}$ and $\mathit{POSU}_{ir}$ equal to $0.5$. According to our formulation, $\mathit{ABSU}_{ir}$ will be $0.5 + 0.5 = 1$ while $U_{ir}$ itself will be $0.5 - 0.5 = 0$, leading to $\mathit{VALUE}_{ijkr}$ being free to take on any value in $[-1,1]$ even though it should clearly be zero.
+
+To help mitigate this problem, we introduced an alternative measure of the absolute value $\mathit{ABSALTU}_{ir}$ which is at least as large as $|U_{ir}|$. Minimizing $\mathit{ABSALTU}$ as a secondary goal in the objective function serves two purposes: on the one hand we make sure that $\mathit{ABSALTU}_{ir}$ is indeed equal to $|U_{ir}|$, and on the other hand we will obtain the most sparse solution among those that have a residual of zero. The third and final goal of the objective function is then to also keep the distance between $\mathit{ABSU}$ and $\mathit{ABSALTU}$ as small as possible. We have noticed that this does indeed lead to a smaller number of non-integer variables in the solution of the LP relaxation.
+
+\subsection{Dimensionality and tractability}
+
+Table \ref{tbl:dim} shows the dimensionality of the MILP (\ref{eq:milp}) for some choices of the matrix order $N$ and the number of multiplications $R$. The MIPLIB 2010 benchmark \cite{MIPLIB2010} lists some (mixed) binary problems with up to 1.5M rows, 125k binary variables and 28M nonzeros that have been solved. Of course that does not necessarily mean this particular problem can be solved by the current solvers, but at least the size of the problem still seems to be within reason.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{l l r r r}
+                           &               & $N=2$ & $N=3$ & $N=4$ \\
+                           &               & $R=7$ & $R=23$ & $R=46$ \\
+\hline Variables (columns) & $O(N^6 R)$    &  448 &  16767 &  188416 \\
+Binary variables           & $6 N^2 R$     &  168 &   1242 &    4416 \\
+Constraints (rows)         & $O(14 N^6 R)$ & 6272 & 235k & 2.638M \\
+Nonzeros                   & $O(44 N^6 R)$ & 19712 & 738k  & 8.290M 
+\end{tabular}
+\caption{MILP problem dimensions for some choices of the matrix order $N$ and the number of multiplications $R$.}
+\label{tbl:dim}
+\end{table}
+
+\subsection{Optimizations}
+
+\paragraph{Reducing the gap: upper bound.} To help speed up the optimization process, one effective technique is to try to reduce the gap between the upper and lower bound on the objective function. The upper bound can be lowered by providing high quality initial solutions to the solver. For example, we could use local optimization techniques to generate MILP feasible solutions, or take an existing solution such as for $N=2,R=7$ or $N=3,R=23$ and optionally truncate it to a lower rank if desired.
+
+\paragraph{Reducing the gap: lower bound.} Assuming a solution with zero residual exists, the lower bound is determined by the number of nonzeros in the factor matrices. Since the multiplication tensor contains exactly $N^3$ ones in nontrivial locations, the factor matrices would need to contain at least $3N^3$ nonzeros to fill up those ones. Since $R < N^3$, we expect to see at least one sum or difference and so we can raise the lower bound to $3N^3+1$.
+
+\paragraph{Cyclic symmetry.} Multiplication tensors $\mathcal{T}$ corresponding to square matrix multiplication have the cyclic symmetry property $\mathcal{T}_{ijk} = \mathcal{T}_{kij} = \mathcal{T}_{jki}$. This means that if $[\![U,V,W]\!]$ is a PD then $[\![W,U,V]\!]$ and $[\![V,W,U]\!]$ are also PDs of $\mathcal{T}$. Ballard proposed to parametrize the factor matrices in the cyclic invariant form $U := [A\,B\,C\,D]$, $V := [A\,D\,B\,C]$, and $W := [A\,C\,D\,B]$, where $A \in \{-1,0,1\}^{N^2 \times S}$ and $B,C,D \in \{-1,0,1\}^{N^2 \times T}$ \cite{Ballard2017}. The rank is therefore equal to $R = S + 3T$. This reduces the number of integer variables by a factor of three. However, there is no guarantee that the minimal rank of the cyclic invariant parametrized PD is equal to the rank of the CPD. Still, we are somewhat optimistic that the two ranks may coincide given that (1) they coincide for the case $N=2,R=7$, (2) there are cyclic invariant solutions for $N=3,R=23$, and (3) that Comon's conjecture on the symmetric PD rank being equal to the CPD rank has been proven to be true under certain assumptions on the tensor or its rank.
+
+\paragraph{Factor matrix structure.} Some additional forms of structure can be imposed as linear constraints on the factor matrices. For example, we could require the sum of absolute values of each factor matrix column to be at least one so that the solver does not look for solutions of rank smaller than $R$. The same constraint can be applied to the rows of the factor matrices since there can be no all-zero slices in the multiplication tensor. Finally, we could additionally conjecture that all factor matrices have an equal number of nonzeros (since this is the case for $N=2,R=7$ and for the cyclically invariant solutions for $N=3,R=23$). Furthermore, this would raise the lower bound on the objective function from $3N^3 + 1$ to the next nearest multiple of three.
+
+\section*{Acknowledgements}
+
+We thank Nick Vannieuwenhoven for the insightful discussions which have helped improve this manuscript.
+
+\bibliographystyle{abbrv}
+\bibliography{fast-matrix-multiplication}
+
+\end{document}

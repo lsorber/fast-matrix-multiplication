@@ -159,6 +159,7 @@ def solution_N3_R23():
         [-1, -1,  0,  1,  0, 0],
         [-1, -1,  0,  1,  0, 0]
     ])
+    # Construct the factor matrices.
     U = np.hstack((A, B, C, D))
     V = np.hstack((A, D, B, C))
     W = np.hstack((A, C, D, B))
@@ -434,19 +435,21 @@ def construct_instance(
                 for r in range(R))
     # Optimization 1: Lower bound on the number of nonzeros in factor matrices.
     if factors_nz_lb:
-        lb = 3 * N ** 3 + R
+        lb = 3 * N ** 3 + 1
         prob += pulp.lpSum(
             abs_factors[f][i][r]
             for f in range(len(factors))
             for i in range(N ** 2)
             for r in range(R)) >= \
-            3 * int(np.ceil(lb / 3)) if factors_equal_nz else lb
+            3 * int(np.ceil(lb / 3)) \
+            if factors_equal_nz or cyclic_invariant else lb
         prob += pulp.lpSum(
             abs_alt_factors[f][i][r]
             for f in range(len(factors))
             for i in range(N ** 2)
             for r in range(R)) >= \
-            3 * int(np.ceil(lb / 3)) if factors_equal_nz else lb
+            3 * int(np.ceil(lb / 3)) \
+            if factors_equal_nz or cyclic_invariant else lb
     # Optimization 2: Lower bound on the number of nonzeros in factor columns.
     if factors_col_nz_lb > 0:
         for f in range(len(factors)):
@@ -624,17 +627,10 @@ if __name__ == '__main__':
         'transpose_symmetry': False,
         'permutation_symmetry': False
     }
-    # Write instances that don't exploit cyclical invariance.
-    NR = \
-        [(2, R) for R in range(6, 7 + 1)] + \
-        [(3, R) for R in range(19, 23 + 1)]
-    for N, R in NR:
-        prob = construct_instance(N, R, **optimizations)
-        write_instance(prob)
     # Write instances that exploit cyclical invariance.
     NRST = \
         [(2, S + 3 * 2, S, 2) for S in range(0, 1 + 1)] + \
-        [(3, S + 3 * 6, S, 6) for S in range(1, 5 + 1)]
+        [(3, S + 3 * 6, S, 6) for S in range(3, 5 + 1)]
     for N, R, S, T in NRST:
         prob = construct_instance(N, R, S, T, **optimizations)
         write_instance(prob)
